@@ -4,6 +4,17 @@ A native macOS menu bar app to control Oraimo SpaceBuds Neo+ earbuds — ANC, EQ
 
 **[Download the latest release (.dmg)](https://github.com/oumzx/OraimoBuds/releases/latest)**
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/main-popover.png" width="260" alt="Main menu bar popover">
+  <img src="screenshots/settings-general.png" width="260" alt="Settings — General">
+</p>
+<p align="center">
+  <img src="screenshots/settings-updates.png" width="260" alt="Settings — Updates">
+  <img src="screenshots/settings-about.png" width="260" alt="Settings — About">
+</p>
+
 ## Features
 
 - **ANC control** — Off / Noise Cancelling / Transparency, read and write
