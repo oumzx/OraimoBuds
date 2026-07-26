@@ -2,6 +2,8 @@
 
 A native macOS menu bar app to control Oraimo SpaceBuds Neo+ earbuds — ANC, EQ, battery, and touch gestures — talking directly to the earbuds' RCSP protocol over Bluetooth LE, the same way the official "oraimo sound" phone app does.
 
+**[Download the latest release (.dmg)](https://github.com/oumzx/OraimoBuds/releases/latest)**
+
 ## Features
 
 - **ANC control** — Off / Noise Cancelling / Transparency, read and write
