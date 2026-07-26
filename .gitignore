@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+OraimoBuds.app/
+.DS_Store
