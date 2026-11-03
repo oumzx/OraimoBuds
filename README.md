@@ -1,6 +1,6 @@
 # OraimoBuds
 
-A native macOS menu bar app to control Oraimo SpaceBuds Neo+ earbuds — ANC, EQ, battery, and touch gestures — talking directly to the earbuds' RCSP protocol over Bluetooth LE, the same way the official "oraimo sound" phone app does.
+A native macOS menu bar app to control Oraimo SpaceBuds earbuds — ANC, EQ, battery, and touch gestures — talking directly to the earbuds' RCSP protocol over Bluetooth LE, the same way the official "oraimo sound" phone app does.
 
 **[Download the latest release (.dmg)](https://github.com/oumzx/OraimoBuds/releases/latest)**
 
@@ -14,6 +14,16 @@ A native macOS menu bar app to control Oraimo SpaceBuds Neo+ earbuds — ANC, EQ
   <img src="screenshots/settings-updates.png" width="260" alt="Settings — Updates">
   <img src="screenshots/settings-about.png" width="260" alt="Settings — About">
 </p>
+
+## Supported earbuds
+
+| Model | ANC | EQ | Battery | Gestures | Status |
+|---|---|---|---|---|---|
+| oraimo SpaceBuds (OTW-630) | ✅ | ✅ | ✅ | ✅ | confirmed on real hardware |
+| oraimo SpaceBuds Neo+ (OTW-323P) | ✅ | ✅ | ✅ | ✅ | confirmed on real hardware |
+| oraimo SpaceBuds Neo (OTW-323) | — (no ANC hardware) | ✅ | ✅ | ✅ | confirmed on real hardware |
+
+The model is identified from the product ID in the earbuds' BLE advertisement. The app only ever connects to Oraimo earbuds **paired with this Mac**: each advertisement carries the earbuds' Bluetooth address, which is checked against macOS's paired devices, so a neighbour's Oraimo devices are ignored. It prefers the earbuds your Mac's audio is playing through, and the **Paired earbuds** menu in the popover lets you switch to another paired set (your choice is remembered).
 
 ## Features
 
@@ -38,7 +48,7 @@ This repository includes a copy of JieLi's compiled `libjl_bluetooth.so`, extrac
 
 ## Building
 
-Requires macOS 14+ and either Xcode or just the Command Line Tools (`xcode-select --install`) — no Xcode project needed.
+Requires an Apple Silicon Mac (the vendor crypto library is ARM64 code), macOS 14+, and either Xcode or just the Command Line Tools (`xcode-select --install`) — no Xcode project needed.
 
 ```bash
 swift build                # debug build, or:

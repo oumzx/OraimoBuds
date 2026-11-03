@@ -7,13 +7,16 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            deviceMenu
 
             if ble.connectionState == .ready {
                 Divider()
                 batterySection
                 Divider()
-                ancSection
-                Divider()
+                if ble.ancSupported == true {
+                    ancSection
+                    Divider()
+                }
                 eqSection
                 Divider()
                 gesturesSection
@@ -28,6 +31,45 @@ struct ContentView: View {
         }
         .padding(14)
         .frame(width: 300)
+        .onAppear { ble.refreshNearbyDevices() }
+    }
+
+    // MARK: - Device menu
+
+    /// Only Oraimo earbuds paired with this Mac are listed (and ever
+    /// connected to); a neighbour's devices never show up here.
+    @ViewBuilder
+    private var deviceMenu: some View {
+        if ble.nearbyDevices.isEmpty {
+            if ble.connectionState == .scanning {
+                Text("Looking for Oraimo earbuds paired with this Mac…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Menu {
+                ForEach(ble.nearbyDevices) { device in
+                    Button {
+                        ble.selectDevice(device.id)
+                    } label: {
+                        if device.id == ble.connectedDeviceID {
+                            Label(deviceLabel(device), systemImage: "checkmark")
+                        } else {
+                            Text(deviceLabel(device))
+                        }
+                    }
+                }
+            } label: {
+                Label("Paired earbuds (\(ble.nearbyDevices.count))", systemImage: "earbuds")
+                    .font(.caption)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
+    private func deviceLabel(_ d: BLEManager.NearbyDevice) -> String {
+        d.isAudioConnected ? "\(d.name) — playing audio" : "\(d.name) — paired"
     }
 
     private var header: some View {

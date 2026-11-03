@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreBluetooth
+import IOBluetooth
 import Combine
 
 enum BLEConnectionState: Equatable {
@@ -21,6 +22,13 @@ final class BLEManager: NSObject, ObservableObject {
         didSet { stateEnteredAt = Date() }
     }
     @Published private(set) var deviceName: String?
+    /// Model identified from the advertisement's product ID, nil if the pid
+    /// isn't in `EarbudsModel.known` (the app still tries to drive it).
+    @Published private(set) var model: EarbudsModel?
+    /// nil = not known yet. Set from the model table when the pid is known,
+    /// otherwise learned from the device's answer to the noise-mode GET (an
+    /// empty attribute list means no ANC hardware).
+    @Published private(set) var ancSupported: Bool?
     @Published private(set) var battery: RCSP.BatteryInfo?
     @Published private(set) var ancMode: UInt8?
     @Published private(set) var eqMode: UInt8?
@@ -42,6 +50,54 @@ final class BLEManager: NSObject, ObservableObject {
     }
     private var authStep: AuthStep = .notStarted
     private var opCodeSnCounter: UInt8 = 1
+    /// opCodeSn of the last noise-mode GET, to recognise its (possibly empty) reply.
+    private var ancQuerySn: UInt8?
+    /// Peripherals that matched the scan filter but turned out not to expose
+    /// the RCSP service (e.g. a Bluetrum-based Oraimo product): skipped on
+    /// later scans so we don't keep reconnecting to them.
+    private var ignoredPeripherals: Set<UUID> = []
+
+    /// Levels (8 bytes) of each ANC mode, from the noise-mode list, so a mode
+    /// switch re-sends that mode's own levels instead of overwriting them.
+    private var ancLevels: [UInt8: [UInt8]] = [:]
+
+    /// An Oraimo device seen nearby that is paired with this Mac, for the
+    /// popover's device menu.
+    struct NearbyDevice: Identifiable, Equatable {
+        let id: UUID
+        let name: String
+        /// Its classic (audio) connection to this Mac is up right now.
+        let isAudioConnected: Bool
+        let rssi: Int
+    }
+    @Published private(set) var nearbyDevices: [NearbyDevice] = []
+    @Published private(set) var connectedDeviceID: UUID?
+
+    /// Several Oraimo devices can be advertising nearby (seen live: five at
+    /// once, and a neighbour's BoomPop authenticated fine — same JieLi
+    /// stack). So only devices PAIRED WITH THIS MAC are ever used: the
+    /// beacon's classic address must be in IOBluetooth's paired list.
+    /// Among those, selection order:
+    /// 1. the device the user picked in the menu (`preferredPeripheralID`),
+    /// 2. the one this Mac's audio is connected to right now,
+    /// 3. after a short listening window, the strongest signal.
+    private struct Candidate {
+        let peripheral: CBPeripheral
+        let bleName: String?
+        let beacon: EarbudsModel.Beacon
+        let pairedName: String?
+        let isAudioConnected: Bool
+        var rssi: Int
+        var lastSeen: Date
+    }
+    /// Paired candidates seen recently (kept across scans for the menu).
+    private var nearby: [UUID: Candidate] = [:]
+    /// Ids seen during the current scan, i.e. actually in range now.
+    private var seenThisScan: Set<UUID> = []
+    private var loggedUnpaired: Set<UUID> = []
+    private var selectionWork: DispatchWorkItem?
+    private var switchTarget: Candidate?
+    private static let selectionWindow: TimeInterval = 4
 
     private func nextOpCodeSn() -> UInt8 {
         defer { opCodeSnCounter &+= 1 }
@@ -94,7 +150,8 @@ final class BLEManager: NSObject, ObservableObject {
     // MARK: - Public commands
 
     func setAncMode(_ mode: UInt8) {
-        send(RCSP.buildSetAncModeCmd(mode: mode, opCodeSn: nextOpCodeSn()))
+        let levels = ancLevels[mode] ?? RCSP.defaultAncLevels
+        send(RCSP.buildSetAncModeCmd(mode: mode, levels: levels, opCodeSn: nextOpCodeSn()))
     }
 
     /// `presetId` 0/1/2/3/4/5/8 are named presets (Standard/Bass/Rock/Jazz/
@@ -120,9 +177,39 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Switches to another paired device from the menu, and remembers the
+    /// choice so later reconnects prefer it.
+    func selectDevice(_ id: UUID) {
+        guard id != peripheral?.identifier, let target = nearby[id] else { return }
+        UserDefaults.standard.preferredPeripheralID = id
+        log("user selected '\(target.pairedName ?? target.bleName ?? "?")'")
+        if let current = peripheral {
+            switchTarget = target
+            central.cancelPeripheralConnection(current) // didDisconnect → connect(to: switchTarget)
+        } else {
+            connect(to: target)
+        }
+    }
+
+    /// Short scan to refresh the device menu while connected (scanning is
+    /// otherwise stopped once connected, to spare battery).
+    func refreshNearbyDevices() {
+        guard let central, central.state == .poweredOn, connectionState == .ready else { return }
+        central.scanForPeripherals(withServices: nil, options: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, self.connectionState == .ready else { return }
+            self.central.stopScan()
+        }
+    }
+
     func refreshAll() {
         send(RCSP.buildGetBatteryAdvCmd(opCodeSn: nextOpCodeSn()))
-        send(RCSP.buildGetCurrentAncModeCmd(opCodeSn: nextOpCodeSn()))
+        if ancSupported != false {
+            let sn = nextOpCodeSn()
+            ancQuerySn = sn
+            send(RCSP.buildGetCurrentAncModeCmd(opCodeSn: sn))
+            send(RCSP.buildGetAncModeListCmd(opCodeSn: nextOpCodeSn()))
+        }
         send(RCSP.buildGetEqCmd(opCodeSn: nextOpCodeSn()))
         send(RCSP.buildGetKeySettingsCmd(opCodeSn: nextOpCodeSn()))
     }
@@ -162,13 +249,92 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
 
-    private func reconnectAfterDisconnect() {
+    private func resetSession() {
         peripheral = nil
         writeChar = nil
         notifyChar = nil
         authStep = .notStarted
+        ancQuerySn = nil
+        connectedDeviceID = nil
+        battery = nil
+        ancMode = nil
+        eqMode = nil
+        eqGains = nil
+        keySettings = []
+    }
+
+    private func reconnectAfterDisconnect() {
+        resetSession()
+        startScan()
+    }
+
+    /// Scans without a service filter: the SpaceBuds Neo doesn't list 0xAE00
+    /// in its advertisement (only the Neo+ does), so a service-filtered scan
+    /// would never find it. Filtering happens in `didDiscover` instead.
+    private func startScan() {
+        seenThisScan = []
+        selectionWork?.cancel()
+        selectionWork = nil
         connectionState = .scanning
-        central.scanForPeripherals(withServices: [RCSP.serviceUUID], options: nil)
+        central.scanForPeripherals(withServices: nil, options: nil)
+    }
+
+    private func pickBestCandidate() {
+        selectionWork = nil
+        guard peripheral == nil else { return }
+        let inRange = seenThisScan.compactMap { nearby[$0] }
+        let preferred = UserDefaults.standard.preferredPeripheralID
+        let best = inRange.first { $0.peripheral.identifier == preferred }
+            ?? inRange.first { $0.isAudioConnected }
+            ?? inRange.max { $0.rssi < $1.rssi }
+        guard let best else { return }
+        log("picked '\(best.pairedName ?? best.bleName ?? "?")' among \(inRange.count) paired device(s) in range")
+        connect(to: best)
+    }
+
+    /// Devices paired with this Mac, keyed by normalised classic address
+    /// ("AA:BB:CC:DD:EE:FF"), with their macOS name and audio-connection state.
+    private static func pairedDevices() -> [String: (name: String?, connected: Bool)] {
+        let devices = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
+        var result: [String: (name: String?, connected: Bool)] = [:]
+        for d in devices {
+            guard let address = d.addressString else { continue }
+            result[EarbudsModel.normalizedAddress(address)] = (d.name, d.isConnected())
+        }
+        return result
+    }
+
+    private func connect(to c: Candidate) {
+        central.stopScan()
+        selectionWork?.cancel()
+        selectionWork = nil
+        resetSession()
+        peripheral = c.peripheral
+        connectedDeviceID = c.peripheral.identifier
+        ancLevels = [:]
+        model = EarbudsModel.model(forPID: c.beacon.pid)
+        ancSupported = model?.hasANC
+        deviceName = model.map { "Oraimo \($0.name)" }
+            ?? c.pairedName
+            ?? EarbudsModel.displayName(fromBLEName: c.bleName).map { "Oraimo \($0)" }
+        connectionState = .connecting
+        central.connect(c.peripheral, options: nil)
+    }
+
+    private func publishNearby() {
+        let cutoff = Date().addingTimeInterval(-120)
+        nearbyDevices = nearby.values
+            .filter { $0.lastSeen > cutoff || $0.peripheral.identifier == connectedDeviceID }
+            .map { c in
+                let modelName = EarbudsModel.model(forPID: c.beacon.pid).map { "Oraimo \($0.name)" }
+                return NearbyDevice(
+                    id: c.peripheral.identifier,
+                    name: modelName ?? c.pairedName ?? EarbudsModel.displayName(fromBLEName: c.bleName) ?? "Oraimo device",
+                    isAudioConnected: c.isAudioConnected,
+                    rssi: c.rssi
+                )
+            }
+            .sorted { ($0.isAudioConnected ? 1 : 0, $0.rssi) > ($1.isAudioConnected ? 1 : 0, $1.rssi) }
     }
 }
 
@@ -176,12 +342,7 @@ extension BLEManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            connectionState = .scanning
-            central.scanForPeripherals(withServices: [RCSP.serviceUUID], options: nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                guard let self, self.peripheral == nil else { return }
-                central.scanForPeripherals(withServices: nil, options: nil)
-            }
+            startScan()
         case .poweredOff:
             connectionState = .disconnected
             lastError = "Bluetooth is off"
@@ -194,16 +355,41 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? ""
-        let advertisedServices = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
-        let matchesService = advertisedServices.contains(RCSP.serviceUUID)
-        let matchesName = name.lowercased().contains("oraimo") || name.lowercased().contains("spacebuds")
-        guard matchesService || matchesName else { return }
-        self.peripheral = peripheral
-        deviceName = peripheral.name
-        connectionState = .connecting
-        central.stopScan()
-        central.connect(peripheral, options: nil)
+        let id = peripheral.identifier
+        guard !ignoredPeripherals.contains(id) else { return }
+        // Only Oraimo beacons carrying a classic address can be checked
+        // against this Mac's paired devices; anything else is ignored.
+        guard let beacon = EarbudsModel.beacon(fromManufacturerData: advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data),
+              let address = beacon.classicAddress else { return }
+        let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
+        guard let paired = Self.pairedDevices()[address] else {
+            if loggedUnpaired.insert(id).inserted {
+                log("ignoring unpaired '\(name ?? "?")' pid=\(beacon.pid)")
+            }
+            return
+        }
+        let rssi = RSSI.intValue == 127 ? -127 : RSSI.intValue // 127 = unavailable
+        let candidate = Candidate(peripheral: peripheral, bleName: name, beacon: beacon, pairedName: paired.name,
+                                  isAudioConnected: paired.connected, rssi: rssi, lastSeen: Date())
+        if nearby[id] == nil {
+            log("paired device '\(paired.name ?? name ?? "?")' pid=\(beacon.pid) audio=\(paired.connected) rssi=\(rssi)")
+        }
+        nearby[id] = candidate
+        seenThisScan.insert(id)
+        publishNearby()
+
+        guard self.peripheral == nil, switchTarget == nil else { return } // connected: menu refresh only
+
+        let preferred = UserDefaults.standard.preferredPeripheralID
+        if id == preferred || (preferred == nil && paired.connected) {
+            connect(to: candidate)
+            return
+        }
+        if selectionWork == nil {
+            let work = DispatchWorkItem { [weak self] in self?.pickBestCandidate() }
+            selectionWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.selectionWindow, execute: work)
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -217,14 +403,21 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        reconnectAfterDisconnect()
+        if let target = switchTarget {
+            switchTarget = nil
+            connect(to: target)
+        } else {
+            reconnectAfterDisconnect()
+        }
     }
 }
 
 extension BLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let service = peripheral.services?.first(where: { $0.uuid == RCSP.serviceUUID }) else {
-            lastError = "service 0xAE00 not found: \(error?.localizedDescription ?? "?")"
+            log("no RCSP service on '\(peripheral.name ?? "?")', ignoring it")
+            ignoredPeripherals.insert(peripheral.identifier)
+            central.cancelPeripheralConnection(peripheral) // didDisconnect → rescan
             return
         }
         peripheral.discoverCharacteristics([RCSP.writeCharUUID, RCSP.notifyCharUUID], for: service)
@@ -295,6 +488,7 @@ extension BLEManager: CBPeripheralDelegate {
             authStep = .done
             connectionState = .ready
             lastError = nil
+            log("ready: \(deviceName ?? "?") model=\(model?.name ?? "unknown") ancSupported=\(String(describing: ancSupported))")
             refreshAll()
 
         case .done, .notStarted:
@@ -321,11 +515,20 @@ extension BLEManager: CBPeripheralDelegate {
         } else if parsed.opcode == RCSP.Opcode.getSysInfo.rawValue || parsed.opcode == RCSP.Opcode.notifySysInfo.rawValue,
                   parsed.paramData.first == RCSP.FunctionGroup.public.rawValue {
             let attrs = Array(parsed.paramData.dropFirst())
+            if parsed.isResponse, parsed.opCodeSn == ancQuerySn {
+                ancQuerySn = nil
+                let hasNoiseAttr = attrs.count >= 2 && attrs[1] == 13
+                if ancSupported == nil { ancSupported = hasNoiseAttr }
+                log("noise-mode attribute present=\(hasNoiseAttr), ancSupported=\(String(describing: ancSupported))")
+            }
             guard attrs.count >= 2 else { return }
             let type = attrs[1]
             let value = Array(attrs.dropFirst(2))
             if type == 13, value.count == 9 { // CURRENT_NOISE_MODE
                 ancMode = value[0]
+                ancLevels[value[0]] = Array(value[1...8])
+            } else if type == 14 { // ALL_NOISE_MODE (supported modes + their levels)
+                ancLevels.merge(RCSP.parseAncModeList(value)) { _, new in new }
             } else if type == 4, value.count >= 11 { // EQ
                 eqMode = value[0]
                 eqGains = value[1...10].map { Int8(bitPattern: $0) }
