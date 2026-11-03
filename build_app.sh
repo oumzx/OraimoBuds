@@ -28,8 +28,12 @@ cp AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 # locateNativeCryptoLib() looks for it at exactly this path first.
 RESOURCE_BUNDLE="${APP_NAME}_${APP_NAME}.bundle"
 for RES in libjl_bluetooth.so MenuBarIcon.png; do
+    # Older SwiftPM puts resources at the bundle root; the newer Swift Build
+    # backend (Swift 6.x) nests them under Contents/Resources.
     if [ -f "$BUILD_DIR/$RESOURCE_BUNDLE/$RES" ]; then
         cp "$BUILD_DIR/$RESOURCE_BUNDLE/$RES" "$APP_BUNDLE/Contents/Resources/$RES"
+    elif [ -f "$BUILD_DIR/$RESOURCE_BUNDLE/Contents/Resources/$RES" ]; then
+        cp "$BUILD_DIR/$RESOURCE_BUNDLE/Contents/Resources/$RES" "$APP_BUNDLE/Contents/Resources/$RES"
     else
         echo "!! $RES not found under $BUILD_DIR/$RESOURCE_BUNDLE" >&2
         exit 1

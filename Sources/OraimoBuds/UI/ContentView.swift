@@ -12,8 +12,10 @@ struct ContentView: View {
                 Divider()
                 batterySection
                 Divider()
-                ancSection
-                Divider()
+                if ble.ancSupported == true {
+                    ancSection
+                    Divider()
+                }
                 eqSection
                 Divider()
                 gesturesSection
@@ -187,6 +189,9 @@ struct ContentView: View {
     private var footer: some View {
         HStack {
             Button("Refresh") { ble.refreshAll() }
+                .disabled(ble.connectionState != .ready)
+            Button("Other earbuds…") { ble.forgetCurrentDevice() }
+                .help("Forget these earbuds and connect to another Oraimo device nearby")
                 .disabled(ble.connectionState != .ready)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }

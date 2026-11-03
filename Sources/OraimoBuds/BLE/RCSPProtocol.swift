@@ -123,6 +123,26 @@ enum RCSP {
         buildGetSysInfoCmd(group: .public, mask: 1 << PublicAttrBit.currentNoiseMode.rawValue, opCodeSn: opCodeSn)
     }
 
+    static func buildGetAncModeListCmd(opCodeSn: UInt8) -> [UInt8] {
+        buildGetSysInfoCmd(group: .public, mask: 1 << PublicAttrBit.allNoiseMode.rawValue, opCodeSn: opCodeSn)
+    }
+
+    /// Parses the ALL_NOISE_MODE attribute value: `[count]` then `count`
+    /// 9-byte VoiceModes `[mode][8 level bytes]`. Returns mode → levels.
+    /// Live 630 example: `03 | 00 40 00 40 00 40 00 40 00 | 01 … | 02 40 00
+    /// 40 00 25 5C 25 5C`.
+    static func parseAncModeList(_ value: [UInt8]) -> [UInt8: [UInt8]] {
+        guard let count = value.first else { return [:] }
+        var result: [UInt8: [UInt8]] = [:]
+        var i = 1
+        for _ in 0..<Int(count) {
+            guard i + 9 <= value.count else { break }
+            result[value[i]] = Array(value[(i + 1)..<(i + 9)])
+            i += 9
+        }
+        return result
+    }
+
     static func buildGetEqCmd(opCodeSn: UInt8) -> [UInt8] {
         buildGetSysInfoCmd(group: .public, mask: 1 << PublicAttrBit.eq.rawValue, opCodeSn: opCodeSn)
     }
@@ -147,11 +167,19 @@ enum RCSP {
     }
 
     /// mode: 0 = Off, 1 = ANC (denoise), 2 = Transparency.
-    /// leftMax/rightMax/leftCur/rightCur observed as 0x4000 (fixed, no
-    /// adjustable ANC strength on this earbud model).
-    static func buildSetAncModeCmd(mode: UInt8, opCodeSn: UInt8) -> [UInt8] {
-        var voiceMode: [UInt8] = [mode]
-        for _ in 0..<4 { voiceMode.append(0x40); voiceMode.append(0x00) }
+    /// `levels` = the 8 bytes `[leftMax BE16][rightMax BE16][leftCur BE16]
+    /// [rightCur BE16]` that follow the mode byte in a VoiceMode. The device
+    /// stores whatever "cur" values we send, so they must be that mode's own
+    /// current levels (from the noise-mode list, PublicAttrBit.allNoiseMode)
+    /// — e.g. the SpaceBuds 630 keeps its transparency level at 0x255C, and
+    /// sending the 0x4000 default would silently overwrite it. On the Neo+
+    /// every value is 0x4000 (no adjustable strength), hence the default.
+    /// Confirmed live on both models: the device pushes the new VoiceMode
+    /// back (opcode 9) with the levels unchanged.
+    static let defaultAncLevels: [UInt8] = [0x40, 0x00, 0x40, 0x00, 0x40, 0x00, 0x40, 0x00]
+
+    static func buildSetAncModeCmd(mode: UInt8, levels: [UInt8] = defaultAncLevels, opCodeSn: UInt8) -> [UInt8] {
+        let voiceMode: [UInt8] = [mode] + (levels.count == 8 ? levels : defaultAncLevels)
         let attr = attrBean(type: 13, data: voiceMode)
         let paramData: [UInt8] = [FunctionGroup.public.rawValue] + attr
         return buildFrame(opcode: .setSysInfo, opCodeSn: opCodeSn, hasResponse: true, paramData: paramData)
