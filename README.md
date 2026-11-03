@@ -23,7 +23,7 @@ A native macOS menu bar app to control Oraimo SpaceBuds earbuds — ANC, EQ, bat
 | oraimo SpaceBuds Neo+ (OTW-323P) | ✅ | ✅ | ✅ | ✅ | confirmed on real hardware |
 | oraimo SpaceBuds Neo (OTW-323) | — (no ANC hardware) | ✅ | ✅ | ✅ | confirmed on real hardware |
 
-The model is identified from the product ID in the earbuds' BLE advertisement. When several Oraimo devices are around, the app connects to the one whose advertised Bluetooth address matches the headset your Mac's audio is connected to, and then remembers it. Use **Other earbuds…** in the popover to switch.
+The model is identified from the product ID in the earbuds' BLE advertisement. The app only ever connects to Oraimo earbuds **paired with this Mac**: each advertisement carries the earbuds' Bluetooth address, which is checked against macOS's paired devices, so a neighbour's Oraimo devices are ignored. It prefers the earbuds your Mac's audio is playing through, and the **Paired earbuds** menu in the popover lets you switch to another paired set (your choice is remembered).
 
 ## Features
 
