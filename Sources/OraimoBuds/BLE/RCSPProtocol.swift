@@ -50,6 +50,60 @@ enum RCSP {
         case advSetInfo = 192 // CMD_ADV_SETTINGS
         case advGetInfo = 193 // CMD_ADV_GET_INFO
         case advNotify = 194 // CMD_ADV_DEVICE_NOTIFY (unsolicited push)
+        // CMD_EXTRA_CUSTOM: Oraimo's own vendor commands (CustomCmd), raw
+        // payload `[id, ...]`; replies/pushes come back as `[id, value...]`.
+        case extraCustom = 255
+    }
+
+    /// Custom command ids used by the official app (SDKUtils custom-cmd parser).
+    enum CustomId: UInt8 {
+        /// `[3, mode, levelHi, levelLo]` sets the ANC/transparency strength of
+        /// `mode` (1 = ANC, 2 = Transparency), 0…mode max (0x4000). It does
+        /// NOT switch mode. Confirmed live on the SpaceBuds 630: the new level
+        /// shows up in the ALL_NOISE_MODE list, the current mode is untouched.
+        case noiseAdjust = 3
+        /// "Smart Chat Mode": talking pauses the music and switches to
+        /// Transparency, playback resumes ~10 s after you stop. Switch-style
+        /// command: `[7, 1]` off, `[7, 2]` on, `[7, 0]` query; the device
+        /// answers with a push `[7, 1|2]`. Only works in ANC mode (the
+        /// official app refuses to enable it otherwise). Confirmed live on
+        /// the SpaceBuds 630.
+        case chatMode = 7
+    }
+
+    static func buildCustomSwitchCmd(_ id: CustomId, on: Bool, opCodeSn: UInt8) -> [UInt8] {
+        buildCustomCmd([id.rawValue, on ? 2 : 1], opCodeSn: opCodeSn)
+    }
+
+    static func buildCustomQueryCmd(_ id: CustomId, opCodeSn: UInt8) -> [UInt8] {
+        buildCustomCmd([id.rawValue, 0], opCodeSn: opCodeSn)
+    }
+
+    static func buildCustomCmd(_ payload: [UInt8], opCodeSn: UInt8) -> [UInt8] {
+        buildFrame(opcode: .extraCustom, opCodeSn: opCodeSn, hasResponse: true, paramData: payload)
+    }
+
+    static func buildSetAncLevelCmd(mode: UInt8, level: UInt16, opCodeSn: UInt8) -> [UInt8] {
+        buildCustomCmd([CustomId.noiseAdjust.rawValue, mode, UInt8(level >> 8), UInt8(level & 0xFF)], opCodeSn: opCodeSn)
+    }
+
+    /// The 8 VoiceMode level bytes are `[leftMax][rightMax][leftCur][rightCur]`,
+    /// each BE16. Returns (current, max) using the left side (both sides are
+    /// always equal on the devices seen so far).
+    static func ancLevel(fromLevels levels: [UInt8]) -> (current: UInt16, max: UInt16)? {
+        guard levels.count == 8 else { return nil }
+        let max = UInt16(levels[0]) << 8 | UInt16(levels[1])
+        let cur = UInt16(levels[4]) << 8 | UInt16(levels[5])
+        return (cur, max)
+    }
+
+    /// Same 8 bytes with both "cur" values replaced by `level`.
+    static func levels(_ levels: [UInt8], withCurrent level: UInt16) -> [UInt8] {
+        guard levels.count == 8 else { return levels }
+        var l = levels
+        l[4] = UInt8(level >> 8); l[5] = UInt8(level & 0xFF)
+        l[6] = UInt8(level >> 8); l[7] = UInt8(level & 0xFF)
+        return l
     }
 
     /// ADV_TYPE_* from AttrAndFunCode.java, used as bit positions in the

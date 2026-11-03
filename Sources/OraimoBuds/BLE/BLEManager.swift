@@ -59,7 +59,17 @@ final class BLEManager: NSObject, ObservableObject {
 
     /// Levels (8 bytes) of each ANC mode, from the noise-mode list, so a mode
     /// switch re-sends that mode's own levels instead of overwriting them.
-    private var ancLevels: [UInt8: [UInt8]] = [:]
+    @Published private(set) var ancLevels: [UInt8: [UInt8]] = [:]
+    /// Smart Chat Mode state, nil until the device answered (or unsupported).
+    @Published private(set) var chatModeOn: Bool?
+
+    /// (current, max) strength of the active ANC mode, when the model lets
+    /// it be adjusted and the active mode is ANC or Transparency.
+    var adjustableAncLevel: (current: UInt16, max: UInt16)? {
+        guard model?.hasAdjustableANC == true, let mode = ancMode, mode == 1 || mode == 2,
+              let levels = ancLevels[mode], let l = RCSP.ancLevel(fromLevels: levels), l.max > 0 else { return nil }
+        return l
+    }
 
     /// An Oraimo device seen nearby that is paired with this Mac, for the
     /// popover's device menu.
@@ -152,6 +162,35 @@ final class BLEManager: NSObject, ObservableObject {
     func setAncMode(_ mode: UInt8) {
         let levels = ancLevels[mode] ?? RCSP.defaultAncLevels
         send(RCSP.buildSetAncModeCmd(mode: mode, levels: levels, opCodeSn: nextOpCodeSn()))
+        // Chat mode only runs in ANC mode; re-read it so the toggle reflects
+        // whatever the earbuds decided after the mode change.
+        if model?.hasChatMode == true {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self else { return }
+                self.send(RCSP.buildCustomQueryCmd(.chatMode, opCodeSn: self.nextOpCodeSn()))
+            }
+        }
+    }
+
+    /// The device confirms with a push `[7, 1|2]`, which updates `chatModeOn`.
+    func setChatMode(_ on: Bool) {
+        guard model?.hasChatMode == true else { return }
+        send(RCSP.buildCustomSwitchCmd(.chatMode, on: on, opCodeSn: nextOpCodeSn()))
+    }
+
+    /// Sets the strength of the active mode (ANC or Transparency). The device
+    /// only acks with an empty reply, so the local copy is updated right
+    /// away and the noise-mode list is re-read to confirm.
+    func setAncLevel(_ level: UInt16) {
+        guard model?.hasAdjustableANC == true, let mode = ancMode, mode == 1 || mode == 2,
+              let levels = ancLevels[mode], let l = RCSP.ancLevel(fromLevels: levels) else { return }
+        let clamped = min(level, l.max)
+        send(RCSP.buildSetAncLevelCmd(mode: mode, level: clamped, opCodeSn: nextOpCodeSn()))
+        ancLevels[mode] = RCSP.levels(levels, withCurrent: clamped)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            self.send(RCSP.buildGetAncModeListCmd(opCodeSn: self.nextOpCodeSn()))
+        }
     }
 
     /// `presetId` 0/1/2/3/4/5/8 are named presets (Standard/Bass/Rock/Jazz/
@@ -212,6 +251,9 @@ final class BLEManager: NSObject, ObservableObject {
         }
         send(RCSP.buildGetEqCmd(opCodeSn: nextOpCodeSn()))
         send(RCSP.buildGetKeySettingsCmd(opCodeSn: nextOpCodeSn()))
+        if model?.hasChatMode == true {
+            send(RCSP.buildCustomQueryCmd(.chatMode, opCodeSn: nextOpCodeSn()))
+        }
     }
 
     private func send(_ bytes: [UInt8]) {
@@ -261,6 +303,7 @@ final class BLEManager: NSObject, ObservableObject {
         eqMode = nil
         eqGains = nil
         keySettings = []
+        chatModeOn = nil
     }
 
     private func reconnectAfterDisconnect() {
@@ -502,6 +545,16 @@ extension BLEManager: CBPeripheralDelegate {
     /// published state the same way — this is how the UI stays live
     /// without polling.
     private func applyParsedFrame(_ parsed: RCSP.ParsedFrame) {
+        if parsed.opcode == RCSP.Opcode.extraCustom.rawValue {
+            // Device push `[3, mode, levelHi, levelLo]` (seen live on the 630).
+            let d = parsed.paramData
+            if d.count >= 4, d[0] == RCSP.CustomId.noiseAdjust.rawValue, let levels = ancLevels[d[1]] {
+                ancLevels[d[1]] = RCSP.levels(levels, withCurrent: UInt16(d[2]) << 8 | UInt16(d[3]))
+            } else if d.count >= 2, d[0] == RCSP.CustomId.chatMode.rawValue {
+                chatModeOn = d[1] == 2
+            }
+            return
+        }
         if parsed.opcode == RCSP.Opcode.advGetInfo.rawValue || parsed.opcode == RCSP.Opcode.advNotify.rawValue {
             for (type, data) in RCSP.parseAdvInfoTLVs(parsed.paramData) {
                 if type == UInt8(RCSP.AdvInfoBit.batteryQuantity.rawValue) {

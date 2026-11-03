@@ -28,6 +28,8 @@ The model is identified from the product ID in the earbuds' BLE advertisement. T
 ## Features
 
 - **ANC control** — Off / Noise Cancelling / Transparency, read and write
+- **ANC / transparency strength** slider (SpaceBuds OTW-630)
+- **Smart Chat Mode** — talking pauses the music and switches to Transparency, resuming ~10 s after you stop (SpaceBuds OTW-630, ANC mode)
 - **Battery** — left / right / case percentage, with charging status
 - **EQ** — named presets (Standard, Bass, Rock, Jazz, Vocal, Treble, Balance)
 - **Gestures** — view and edit what each tap gesture does per earbud

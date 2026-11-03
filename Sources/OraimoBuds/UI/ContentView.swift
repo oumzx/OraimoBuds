@@ -163,6 +163,33 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+
+            if let level = ble.adjustableAncLevel {
+                AncLevelSlider(
+                    title: ble.ancMode == 1 ? "ANC strength" : "Transparency level",
+                    current: level.current,
+                    max: level.max
+                ) { ble.setAncLevel($0) }
+                // New identity per mode, so the slider resets to that mode's level.
+                .id(ble.ancMode)
+            }
+
+            if ble.model?.hasChatMode == true, let chatOn = ble.chatModeOn {
+                Toggle(isOn: Binding(get: { chatOn }, set: { ble.setChatMode($0) })) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Smart Chat Mode").font(.caption)
+                        Text(ble.ancMode == 1
+                             ? "Pauses music when you talk, resumes ~10 s after you stop. Wear both earbuds."
+                             : "Available in ANC mode.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .disabled(ble.ancMode != 1 && !chatOn)
+            }
         }
     }
 
@@ -238,6 +265,40 @@ struct ContentView: View {
 
     private func sectionTitle(_ s: String) -> some View {
         Text(s).font(.subheadline).fontWeight(.semibold)
+    }
+}
+
+/// One slider for the active mode's strength. Keeps its own value while
+/// dragging and sends a single command on release (not one per pixel), so
+/// the BLE link isn't flooded.
+private struct AncLevelSlider: View {
+    let title: String
+    let current: UInt16
+    let max: UInt16
+    let commit: (UInt16) -> Void
+
+    @State private var value: Double = 0
+    @State private var editing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title).font(.caption)
+                Spacer()
+                Text("\(Int((value / Double(max) * 100).rounded()))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: $value, in: 0...Double(max)) { isEditing in
+                editing = isEditing
+                if !isEditing { commit(UInt16(value.rounded())) }
+            }
+            .controlSize(.small)
+        }
+        .onAppear { value = Double(current) }
+        .onChange(of: current) { _, new in
+            if !editing { value = Double(new) }
+        }
     }
 }
 
