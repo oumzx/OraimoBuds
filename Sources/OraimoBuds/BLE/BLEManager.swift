@@ -59,7 +59,15 @@ final class BLEManager: NSObject, ObservableObject {
 
     /// Levels (8 bytes) of each ANC mode, from the noise-mode list, so a mode
     /// switch re-sends that mode's own levels instead of overwriting them.
-    private var ancLevels: [UInt8: [UInt8]] = [:]
+    @Published private(set) var ancLevels: [UInt8: [UInt8]] = [:]
+
+    /// (current, max) strength of the active ANC mode, when the model lets
+    /// it be adjusted and the active mode is ANC or Transparency.
+    var adjustableAncLevel: (current: UInt16, max: UInt16)? {
+        guard model?.hasAdjustableANC == true, let mode = ancMode, mode == 1 || mode == 2,
+              let levels = ancLevels[mode], let l = RCSP.ancLevel(fromLevels: levels), l.max > 0 else { return nil }
+        return l
+    }
 
     /// An Oraimo device seen nearby that is paired with this Mac, for the
     /// popover's device menu.
@@ -152,6 +160,21 @@ final class BLEManager: NSObject, ObservableObject {
     func setAncMode(_ mode: UInt8) {
         let levels = ancLevels[mode] ?? RCSP.defaultAncLevels
         send(RCSP.buildSetAncModeCmd(mode: mode, levels: levels, opCodeSn: nextOpCodeSn()))
+    }
+
+    /// Sets the strength of the active mode (ANC or Transparency). The device
+    /// only acks with an empty reply, so the local copy is updated right
+    /// away and the noise-mode list is re-read to confirm.
+    func setAncLevel(_ level: UInt16) {
+        guard model?.hasAdjustableANC == true, let mode = ancMode, mode == 1 || mode == 2,
+              let levels = ancLevels[mode], let l = RCSP.ancLevel(fromLevels: levels) else { return }
+        let clamped = min(level, l.max)
+        send(RCSP.buildSetAncLevelCmd(mode: mode, level: clamped, opCodeSn: nextOpCodeSn()))
+        ancLevels[mode] = RCSP.levels(levels, withCurrent: clamped)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            self.send(RCSP.buildGetAncModeListCmd(opCodeSn: self.nextOpCodeSn()))
+        }
     }
 
     /// `presetId` 0/1/2/3/4/5/8 are named presets (Standard/Bass/Rock/Jazz/
@@ -502,6 +525,14 @@ extension BLEManager: CBPeripheralDelegate {
     /// published state the same way — this is how the UI stays live
     /// without polling.
     private func applyParsedFrame(_ parsed: RCSP.ParsedFrame) {
+        if parsed.opcode == RCSP.Opcode.extraCustom.rawValue {
+            // Device push `[3, mode, levelHi, levelLo]` (seen live on the 630).
+            let d = parsed.paramData
+            if d.count >= 4, d[0] == RCSP.CustomId.noiseAdjust.rawValue, let levels = ancLevels[d[1]] {
+                ancLevels[d[1]] = RCSP.levels(levels, withCurrent: UInt16(d[2]) << 8 | UInt16(d[3]))
+            }
+            return
+        }
         if parsed.opcode == RCSP.Opcode.advGetInfo.rawValue || parsed.opcode == RCSP.Opcode.advNotify.rawValue {
             for (type, data) in RCSP.parseAdvInfoTLVs(parsed.paramData) {
                 if type == UInt8(RCSP.AdvInfoBit.batteryQuantity.rawValue) {
