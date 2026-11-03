@@ -173,6 +173,23 @@ struct ContentView: View {
                 // New identity per mode, so the slider resets to that mode's level.
                 .id(ble.ancMode)
             }
+
+            if ble.model?.hasChatMode == true, let chatOn = ble.chatModeOn {
+                Toggle(isOn: Binding(get: { chatOn }, set: { ble.setChatMode($0) })) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Smart Chat Mode").font(.caption)
+                        Text(ble.ancMode == 1
+                             ? "Pauses music when you talk, resumes ~10 s after you stop. Wear both earbuds."
+                             : "Available in ANC mode.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .disabled(ble.ancMode != 1 && !chatOn)
+            }
         }
     }
 

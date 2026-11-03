@@ -62,6 +62,21 @@ enum RCSP {
         /// NOT switch mode. Confirmed live on the SpaceBuds 630: the new level
         /// shows up in the ALL_NOISE_MODE list, the current mode is untouched.
         case noiseAdjust = 3
+        /// "Smart Chat Mode": talking pauses the music and switches to
+        /// Transparency, playback resumes ~10 s after you stop. Switch-style
+        /// command: `[7, 1]` off, `[7, 2]` on, `[7, 0]` query; the device
+        /// answers with a push `[7, 1|2]`. Only works in ANC mode (the
+        /// official app refuses to enable it otherwise). Confirmed live on
+        /// the SpaceBuds 630.
+        case chatMode = 7
+    }
+
+    static func buildCustomSwitchCmd(_ id: CustomId, on: Bool, opCodeSn: UInt8) -> [UInt8] {
+        buildCustomCmd([id.rawValue, on ? 2 : 1], opCodeSn: opCodeSn)
+    }
+
+    static func buildCustomQueryCmd(_ id: CustomId, opCodeSn: UInt8) -> [UInt8] {
+        buildCustomCmd([id.rawValue, 0], opCodeSn: opCodeSn)
     }
 
     static func buildCustomCmd(_ payload: [UInt8], opCodeSn: UInt8) -> [UInt8] {

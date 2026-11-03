@@ -20,6 +20,8 @@ struct EarbudsModel: Equatable {
     /// ANC / transparency strength can be set (custom command 3). Only the
     /// SpaceBuds 630 is known to support it; the Neo+ reports a fixed 0x4000.
     var hasAdjustableANC: Bool = false
+    /// "Smart Chat Mode" (custom command 7). SpaceBuds 630 only.
+    var hasChatMode: Bool = false
 
     /// Bluetooth company ID Oraimo's JieLi-based earbuds advertise with
     /// (`ABEarbuds.MANUFACTURER_ID = 2370`).
@@ -30,10 +32,10 @@ struct EarbudsModel: Equatable {
         // oraimo SpaceBuds (type 630). Confirmed live 2026-11-03 on pid 32
         // ("630_Normal"): auth, battery, ANC read/write, EQ, gestures. The
         // other pids are variants of the same product in the official app.
-        EarbudsModel(pid: 21, name: "SpaceBuds", hasANC: true, hasAdjustableANC: true),
-        EarbudsModel(pid: 25, name: "SpaceBuds", hasANC: true, hasAdjustableANC: true), // 630_Game
-        EarbudsModel(pid: 32, name: "SpaceBuds", hasANC: true, hasAdjustableANC: true), // 630_Normal
-        EarbudsModel(pid: 33, name: "SpaceBuds", hasANC: true, hasAdjustableANC: true), // 630_Game_Batch
+        EarbudsModel(pid: 21, name: "SpaceBuds", hasANC: true, hasAdjustableANC: true, hasChatMode: true),
+        EarbudsModel(pid: 25, name: "SpaceBuds", hasANC: true, hasAdjustableANC: true, hasChatMode: true), // 630_Game
+        EarbudsModel(pid: 32, name: "SpaceBuds", hasANC: true, hasAdjustableANC: true, hasChatMode: true), // 630_Normal
+        EarbudsModel(pid: 33, name: "SpaceBuds", hasANC: true, hasAdjustableANC: true, hasChatMode: true), // 630_Game_Batch
         // oraimo SpaceBuds Neo (type 323). Confirmed live 2026-11-03: auth,
         // battery, EQ, gestures work; noise-mode GET comes back empty.
         EarbudsModel(pid: 34, name: "SpaceBuds Neo", hasANC: false),
